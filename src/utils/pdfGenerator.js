@@ -169,7 +169,7 @@ async function generatePDF(record) {
   const FRONTEND_ASSETS = 'https://drtweb.in/form/assets';
   let pmLogoBuffer, drtLogoBuffer;
   try {
-    pmLogoBuffer  = await downloadImage(`${FRONTEND_ASSETS}/pm logo.png`);
+    pmLogoBuffer  = await downloadImage(`${FRONTEND_ASSETS}/pm%20logo.png`);
     drtLogoBuffer = await downloadImage(`${FRONTEND_ASSETS}/DRTlogo.png`);
   } catch (e) {
     console.error('Logo download error:', e.message);
