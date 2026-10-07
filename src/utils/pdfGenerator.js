@@ -1,5 +1,7 @@
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
 
 // A4 dimensions in points
 const A4_WIDTH = 595.28;
@@ -8,7 +10,7 @@ const MARGIN = 40;
 const CONTENT_WIDTH = A4_WIDTH - MARGIN * 2;
 
 // Footer height reservation
-const FOOTER_HEIGHT = 60;
+const FOOTER_HEIGHT = 55;
 const FOOTER_LINE_Y = A4_HEIGHT - FOOTER_HEIGHT - 5;
 
 /**
@@ -32,31 +34,65 @@ function formatDate(date) {
 }
 
 /**
- * Draw footer on the current page
+ * Draw professional footer on the current page.
+ * Two-column layout:
+ *   Left  — GSTIN | Contact
+ *   Right — Email | Web  (right-aligned)
  */
 function drawFooter(doc) {
-  const footerLines = [
-    'Call - 7002322258 / 8254028956',
-    'Location - Pulibor, Jorhat-785006, Assam',
-    'Mail - contact@drtweb.in',
-    'Web - www.drtweb.in',
-  ];
-
-  // Horizontal line above footer
+  // ── thick + thin double-rule separator ──
   doc
     .moveTo(MARGIN, FOOTER_LINE_Y)
     .lineTo(A4_WIDTH - MARGIN, FOOTER_LINE_Y)
-    .lineWidth(0.5)
-    .strokeColor('black')
+    .lineWidth(1)
+    .strokeColor('#1a1a1a')
+    .stroke();
+  doc
+    .moveTo(MARGIN, FOOTER_LINE_Y + 2.5)
+    .lineTo(A4_WIDTH - MARGIN, FOOTER_LINE_Y + 2.5)
+    .lineWidth(0.3)
+    .strokeColor('#666666')
     .stroke();
 
-  let y = FOOTER_LINE_Y + 6;
-  doc.font('Helvetica').fontSize(8).fillColor('black');
+  // Vertical centre: 2 rows × 11pt gap => total text height ≈ 19pt
+  // Available space: FOOTER_LINE_Y + 5 (after thin rule) to page bottom
+  const fy = FOOTER_LINE_Y + 12;  // first row y
 
-  for (const line of footerLines) {
-    doc.text(line, MARGIN, y, { width: CONTENT_WIDTH, align: 'center' });
-    y += 12;
-  }
+  // ── LEFT column ──
+  const leftX = MARGIN;
+
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
+  doc.text('GSTIN:', leftX, fy, { continued: true, lineBreak: false });
+  doc.font('Helvetica').fontSize(7.5).fillColor('#111111');
+  doc.text('  18ABXFM0804A1ZE', { lineBreak: false });
+
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
+  doc.text('Contact:', leftX, fy + 12, { continued: true, lineBreak: false });
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#111111');
+  doc.text('  +91 7002322258  |  +91 8254028956', { lineBreak: false });
+
+  // ── RIGHT column — right-aligned ──
+  // Measure each line and place so text ends at right margin
+  const rightEdge = A4_WIDTH - MARGIN;
+  const emailText = 'Email:  contact@drtweb.in';
+  const webText   = 'Web:  www.drtweb.in';
+
+  const emailW = doc.font('Helvetica-Bold').widthOfString(emailText);
+  const webW   = doc.font('Helvetica-Bold').widthOfString(webText);
+
+  // Email row
+  const emailX = rightEdge - emailW;
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
+  doc.text('Email:', emailX, fy, { continued: true, lineBreak: false });
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#111111');
+  doc.text('  contact@drtweb.in', { lineBreak: false });
+
+  // Web row
+  const webX = rightEdge - webW;
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
+  doc.text('Web:', webX, fy + 12, { continued: true, lineBreak: false });
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#111111');
+  doc.text('  www.drtweb.in', { lineBreak: false });
 }
 
 /**
@@ -84,12 +120,14 @@ function drawContainedImage(doc, imgBuffer, boxX, boxY, boxWidth, boxHeight) {
 }
 
 /**
- * Draw a photo section heading with a separator line
+ * Draw a photo section heading with a filled-band background
  */
 function drawPhotoHeading(doc, label, y) {
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('black');
-  doc.text(label, MARGIN, y, { width: CONTENT_WIDTH });
-  return y + 14;
+  const bandH = 16;
+  doc.rect(MARGIN, y, CONTENT_WIDTH, bandH).fill('#f0f0f0');
+  doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#1a1a1a');
+  doc.text(label, MARGIN + 6, y + 3, { width: CONTENT_WIDTH - 6 });
+  return y + bandH + 4;
 }
 
 /**
@@ -129,6 +167,14 @@ async function generatePDF(record) {
 
   const [img1, img2, img3, img4, img5] = await Promise.all(imageDownloads);
 
+  // Load logo buffers from local filesystem
+  const assetsDir = path.join(
+    __dirname,
+    '..', '..', '..', 'frontend', 'dist', 'assets'
+  );
+  const pmLogoBuffer = fs.readFileSync(path.join(assetsDir, 'pm logo.png'));
+  const drtLogoBuffer = fs.readFileSync(path.join(assetsDir, 'DRTlogo.png'));
+
   const doc = new PDFDocument({
     size: 'A4',
     margin: 0,
@@ -143,23 +189,75 @@ async function generatePDF(record) {
   // ─────────────────────────────────────────────
   let y = MARGIN;
 
-  // --- HEADER ---
-  doc.font('Helvetica-Bold').fontSize(18).fillColor('black');
-  doc.text('DRT ENTERPRISE', MARGIN, y, { width: CONTENT_WIDTH, align: 'center' });
-  y += 24;
+  // ─────────────────────────────────────────────
+  // PROFESSIONAL HEADER
+  // Layout:
+  //  [PM Logo]   [Company Details (centre)]   [DRT Logo]
+  // ─────────────────────────────────────────────
+  const LOGO_BOX_W   = 90;   // reserved width for each logo column
+  const LOGO_BOX_H   = 62;   // max height for logos
+  const HEADER_H     = LOGO_BOX_H + 2; // total header block height
 
-  doc.font('Helvetica').fontSize(10);
-  doc.text('GSTIN: 18ABXFM0804A1ZE', MARGIN, y, { width: CONTENT_WIDTH, align: 'center' });
-  y += 16;
+  const leftLogoX  = MARGIN;
+  const rightLogoX = A4_WIDTH - MARGIN - LOGO_BOX_W;
+  const centreX    = MARGIN + LOGO_BOX_W + 6;
+  const centreW    = A4_WIDTH - MARGIN * 2 - LOGO_BOX_W * 2 - 12;
 
-  // Horizontal rule under header
-  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(0.75).strokeColor('black').stroke();
-  y += 12;
+  // Draw PM logo — left, contained
+  try {
+    doc.image(pmLogoBuffer, leftLogoX, y, {
+      fit: [LOGO_BOX_W, LOGO_BOX_H],
+      align: 'left',
+      valign: 'center',
+    });
+  } catch (e) {
+    console.error('PM logo error:', e.message);
+  }
 
-  // --- CONSUMER INFORMATION TITLE ---
-  doc.font('Helvetica-Bold').fontSize(11).fillColor('black');
-  doc.text('CONSUMER INFORMATION', MARGIN, y, { width: CONTENT_WIDTH, align: 'center' });
-  y += 16;
+  // Draw DRT logo — right, contained (larger fit)
+  try {
+    doc.image(drtLogoBuffer, rightLogoX - 25, y, {
+      fit: [115, 78],
+      align: 'right',
+      valign: 'center',
+    });
+  } catch (e) {
+    console.error('DRT logo error:', e.message);
+  }
+
+  // ── Company name — centred between logos ──
+  // Vertically centre within logo box
+  const nameY = y + (LOGO_BOX_H / 2) - 10;
+  doc.font('Helvetica-Bold').fontSize(15).fillColor('#1a1a1a');
+  doc.text('DRT ENTERPRISE', centreX, nameY, { width: centreW, align: 'center', lineBreak: false });
+
+  // Subtitle / tagline
+  doc.font('Helvetica').fontSize(8).fillColor('#555555');
+  doc.text('Solar Energy Solutions', centreX, nameY + 19, { width: centreW, align: 'center', lineBreak: false });
+
+  // Thin accent line below subtitle
+  const accentLineY = nameY + 31;
+  doc
+    .moveTo(centreX + centreW * 0.1, accentLineY)
+    .lineTo(centreX + centreW * 0.9, accentLineY)
+    .lineWidth(0.5)
+    .strokeColor('#aaaaaa')
+    .stroke();
+
+  y = MARGIN + HEADER_H + 4;
+
+  // ── Double rule under header (mirrors footer) ──
+  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(1).strokeColor('#1a1a1a').stroke();
+  y += 3;
+  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(0.3).strokeColor('#555555').stroke();
+  y += 10;
+
+  // --- CONSUMER INFORMATION TITLE (filled band) ---
+  const sectionBandH = 18;
+  doc.rect(MARGIN, y, CONTENT_WIDTH, sectionBandH).fill('#f0f0f0');
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#1a1a1a');
+  doc.text('CONSUMER INFORMATION', MARGIN, y + 4, { width: CONTENT_WIDTH, align: 'center' });
+  y += sectionBandH + 4;
 
   // --- INFO TABLE ---
   const labelCol = MARGIN;
@@ -182,29 +280,36 @@ async function generatePDF(record) {
 
   doc.fontSize(10);
 
-  for (const [label, value] of fields) {
+  for (let i = 0; i < fields.length; i++) {
+    const [label, value] = fields[i];
     const valueHeight = doc.heightOfString(String(value || ''), {
       width: valueWidth,
       lineGap: 2,
     });
     const rowHeight = Math.max(16, valueHeight + 4);
 
-    doc.font('Helvetica-Bold').fillColor('black');
+    // Alternating row background
+    if (i % 2 === 0) {
+      doc.rect(MARGIN, y - 1, CONTENT_WIDTH, rowHeight + 2).fill('#fafafa');
+    }
+
+    doc.font('Helvetica-Bold').fillColor('#222222');
     doc.text(label, labelCol, y, { width: 170, lineBreak: false });
 
-    doc.font('Helvetica').text(':', colonCol, y, { lineBreak: false });
+    doc.font('Helvetica').fillColor('#555555');
+    doc.text(':', colonCol, y, { lineBreak: false });
 
-    doc.font('Helvetica').fillColor('black');
+    doc.font('Helvetica').fillColor('#1a1a1a');
     doc.text(String(value || ''), valueCol, y, { width: valueWidth, lineGap: 2 });
 
     y += rowHeight + 2;
   }
 
-  y += 8;
+  y += 6;
 
-  // Separator before photo
-  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(0.5).stroke();
-  y += 10;
+  // Separator before photo section
+  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(0.5).strokeColor('#cccccc').stroke();
+  y += 8;
 
   // --- INVERTER PHOTO HEADING ---
   y = drawPhotoHeading(doc, 'Inverter Photo', y);
