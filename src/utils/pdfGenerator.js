@@ -1,7 +1,5 @@
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
-const path = require('path');
-const fs = require('fs');
 
 // A4 dimensions in points
 const A4_WIDTH = 595.28;
@@ -167,13 +165,18 @@ async function generatePDF(record) {
 
   const [img1, img2, img3, img4, img5] = await Promise.all(imageDownloads);
 
-  // Load logo buffers from local filesystem
-  const assetsDir = path.join(
-    __dirname,
-    '..', '..', '..', 'frontend', 'dist', 'assets'
-  );
-  const pmLogoBuffer = fs.readFileSync(path.join(assetsDir, 'pm logo.png'));
-  const drtLogoBuffer = fs.readFileSync(path.join(assetsDir, 'DRTlogo.png'));
+  // Load logo buffers from the live frontend URL (works on Render + locally)
+  const FRONTEND_ASSETS = 'https://drtweb.in/form/assets';
+  let pmLogoBuffer, drtLogoBuffer;
+  try {
+    pmLogoBuffer  = await downloadImage(`${FRONTEND_ASSETS}/pm logo.png`);
+    drtLogoBuffer = await downloadImage(`${FRONTEND_ASSETS}/DRTlogo.png`);
+  } catch (e) {
+    console.error('Logo download error:', e.message);
+    // Continue without logos — they will be silently skipped
+    pmLogoBuffer  = null;
+    drtLogoBuffer = null;
+  }
 
   const doc = new PDFDocument({
     size: 'A4',
@@ -204,25 +207,29 @@ async function generatePDF(record) {
   const centreW    = A4_WIDTH - MARGIN * 2 - LOGO_BOX_W * 2 - 12;
 
   // Draw PM logo — left, contained
-  try {
-    doc.image(pmLogoBuffer, leftLogoX, y, {
-      fit: [LOGO_BOX_W, LOGO_BOX_H],
-      align: 'left',
-      valign: 'center',
-    });
-  } catch (e) {
-    console.error('PM logo error:', e.message);
+  if (pmLogoBuffer) {
+    try {
+      doc.image(pmLogoBuffer, leftLogoX, y, {
+        fit: [LOGO_BOX_W, LOGO_BOX_H],
+        align: 'left',
+        valign: 'center',
+      });
+    } catch (e) {
+      console.error('PM logo error:', e.message);
+    }
   }
 
   // Draw DRT logo — right, contained (larger fit)
-  try {
-    doc.image(drtLogoBuffer, rightLogoX - 25, y, {
-      fit: [115, 78],
-      align: 'right',
-      valign: 'center',
-    });
-  } catch (e) {
-    console.error('DRT logo error:', e.message);
+  if (drtLogoBuffer) {
+    try {
+      doc.image(drtLogoBuffer, rightLogoX - 25, y, {
+        fit: [115, 78],
+        align: 'right',
+        valign: 'center',
+      });
+    } catch (e) {
+      console.error('DRT logo error:', e.message);
+    }
   }
 
   // ── Company name — centred between logos ──
