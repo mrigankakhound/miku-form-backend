@@ -1,458 +1,171 @@
+'use strict';
+
 const PDFDocument = require('pdfkit');
-const axios = require('axios');
-const fs   = require('fs');
-const path = require('path');
+const axios       = require('axios');
+const fs          = require('fs');
+const path        = require('path');
 
-// ── Logos loaded ONCE at startup from bundled assets ──────────────────────────
-// Stored as module-level Buffers so every PDF request reuses the same data
-// without any disk I/O or network call.
+// ── Logos loaded ONCE at startup ──────────────────────────────────
 const ASSETS_DIR = path.join(__dirname, '..', 'assets');
-
-let PM_LOGO_BUFFER  = null;
-let DRT_LOGO_BUFFER = null;
+let PM_LOGO  = null;
+let DRT_LOGO = null;
 try {
-  PM_LOGO_BUFFER  = fs.readFileSync(path.join(ASSETS_DIR, 'pm.png'));
-  DRT_LOGO_BUFFER = fs.readFileSync(path.join(ASSETS_DIR, 'DRTlogo.png'));
-  console.log('[logos] loaded from bundled assets');
+  PM_LOGO  = fs.readFileSync(path.join(ASSETS_DIR, 'pm.png'));
+  DRT_LOGO = fs.readFileSync(path.join(ASSETS_DIR, 'DRTlogo.png'));
+  console.log(`[logos] loaded — pm:${PM_LOGO.length}b drt:${DRT_LOGO.length}b`);
 } catch (e) {
-  console.error('[logos] failed to load bundled assets:', e.message);
+  console.error('[logos] load error:', e.message);
 }
 
-/**
- * Download image as a Node.js Buffer.
- * axios 1.x with responseType:'arraybuffer' returns a true ArrayBuffer on Node.js.
- * Buffer.from() converts it to what PDFKit expects.
- */
-async function downloadImage(url) {
-  const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
-  return Buffer.from(response.data); // ArrayBuffer → Buffer (required by PDFKit)
+// A4 constants
+const A4_W     = 595.28;
+const A4_H     = 841.89;
+const MARGIN   = 40;
+const CW       = A4_W - MARGIN * 2;
+const FOOTER_Y = A4_H - 52;
+
+// ── Cloudinary URL resize ─────────────────────────────────────────
+// Reduces each photo from 2-5 MB to ~150-250 KB before downloading.
+// This is the PRIMARY memory fix for Render free tier OOM.
+function cdnSmall(url) {
+  if (!url || !url.includes('res.cloudinary.com')) return url;
+  return url.replace('/upload/', '/upload/w_900,q_80,c_limit,f_jpg/');
 }
 
-const A4_WIDTH = 595.28;
-const A4_HEIGHT = 841.89;
-const MARGIN = 40;
-const CONTENT_WIDTH = A4_WIDTH - MARGIN * 2;
-
-// Footer height reservation
-const FOOTER_HEIGHT = 55;
-const FOOTER_LINE_Y = A4_HEIGHT - FOOTER_HEIGHT - 5;
-
-
-
-/**
- * Format a date to DD/MM/YYYY
- */
-function formatDate(date) {
-  if (!date) return '';
-  const d = new Date(date);
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
-  return `${day}/${month}/${year}`;
+// ── Download image Buffer ─────────────────────────────────────────
+async function dlImg(url) {
+  const r = await axios.get(cdnSmall(url), { responseType: 'arraybuffer', timeout: 20000 });
+  return Buffer.from(r.data);
 }
 
-/**
- * Draw professional footer on the current page.
- * Two-column layout:
- *   Left  — GSTIN | Contact  (bold values)
- *   Right — Email | Web      (bold values, right-aligned)
- */
+// ── Date formatter ────────────────────────────────────────────────
+function fmtDate(d) {
+  if (!d) return String.fromCharCode(0x2014);
+  const dt = new Date(d);
+  return String(dt.getDate()).padStart(2,'0') + '/' +
+         String(dt.getMonth()+1).padStart(2,'0') + '/' +
+         dt.getFullYear();
+}
+
+// ── Header: [PM Logo] DRT ENTERPRISE [DRT Logo] ───────────────────
+function drawHeader(doc) {
+  const H = 82;
+  doc.rect(0, 0, A4_W, H).fill('#0d1b3e');
+  doc.moveTo(0, H).lineTo(A4_W, H).lineWidth(2.5).strokeColor('#f4c430').stroke();
+  if (PM_LOGO)  { try { doc.image(PM_LOGO,  MARGIN, 11, { width: 88, fit: [88, 60] }); } catch(_){} }
+  if (DRT_LOGO) { try { doc.image(DRT_LOGO, A4_W - MARGIN - 123, 4, { width: 108, fit: [108, 74] }); } catch(_){} }
+  doc.font('Helvetica-Bold').fontSize(18).fillColor('#ffffff');
+  doc.text('DRT ENTERPRISE', 0, 18, { align: 'center', width: A4_W });
+  doc.font('Helvetica').fontSize(8.5).fillColor('#90b4ff');
+  doc.text('Solar System Installation Record', 0, 43, { align: 'center', width: A4_W });
+  return H + 10;
+}
+
+// ── Footer ────────────────────────────────────────────────────────
 function drawFooter(doc) {
-  // thick + thin double-rule separator
-  doc
-    .moveTo(MARGIN, FOOTER_LINE_Y)
-    .lineTo(A4_WIDTH - MARGIN, FOOTER_LINE_Y)
-    .lineWidth(1)
-    .strokeColor('#1a1a1a')
-    .stroke();
-  doc
-    .moveTo(MARGIN, FOOTER_LINE_Y + 2.5)
-    .lineTo(A4_WIDTH - MARGIN, FOOTER_LINE_Y + 2.5)
-    .lineWidth(0.3)
-    .strokeColor('#666666')
-    .stroke();
-
-  const fy = FOOTER_LINE_Y + 12; // first row y
-
-  // ── LEFT column ──
-  const leftX = MARGIN;
-
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
-  doc.text('GSTIN:', leftX, fy, { continued: true, lineBreak: false });
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#111111');
-  doc.text('  18ABXFM0804A1ZE', { lineBreak: false });
-
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
-  doc.text('Contact:', leftX, fy + 12, { continued: true, lineBreak: false });
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#111111');
-  doc.text('  +91 7002322258  |  +91 8254028956', { lineBreak: false });
-
-  // ── RIGHT column — right-aligned, bold values ──
-  const rightEdge = A4_WIDTH - MARGIN;
-  const emailText = 'Email:  contact@drtweb.in';
-  const webText   = 'Web:  www.drtweb.in';
-
-  const emailW = doc.font('Helvetica-Bold').widthOfString(emailText);
-  const webW   = doc.font('Helvetica-Bold').widthOfString(webText);
-
-  // Email row
-  const emailX = rightEdge - emailW;
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
-  doc.text('Email:', emailX, fy, { continued: true, lineBreak: false });
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#111111');
-  doc.text('  contact@drtweb.in', { lineBreak: false });
-
-  // Web row
-  const webX = rightEdge - webW;
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444444');
-  doc.text('Web:', webX, fy + 12, { continued: true, lineBreak: false });
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#111111');
-  doc.text('  www.drtweb.in', { lineBreak: false });
+  doc.moveTo(MARGIN, FOOTER_Y).lineTo(A4_W - MARGIN, FOOTER_Y).lineWidth(1).strokeColor('#222').stroke();
+  doc.moveTo(MARGIN, FOOTER_Y + 2.5).lineTo(A4_W - MARGIN, FOOTER_Y + 2.5).lineWidth(0.3).strokeColor('#999').stroke();
+  const R1 = FOOTER_Y + 10;
+  const R2 = FOOTER_Y + 23;
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444');
+  doc.text('GSTIN: ', MARGIN, R1, { continued: true }); doc.font('Helvetica').fillColor('#111').text('18ABXFM0804A1ZE');
+  doc.font('Helvetica-Bold').fillColor('#444').text('Contact: ', MARGIN, R2, { continued: true }); doc.font('Helvetica').fillColor('#111').text('+91 7002322258  |  +91 8254028956');
+  doc.font('Helvetica-Bold').fillColor('#444').text('Email: ', 0, R1, { align: 'right', width: A4_W - MARGIN, continued: true }); doc.font('Helvetica').fillColor('#111').text('contact@drtweb.in', { align: 'right' });
+  doc.font('Helvetica-Bold').fillColor('#444').text('Web: ', 0, R2, { align: 'right', width: A4_W - MARGIN, continued: true }); doc.font('Helvetica').fillColor('#111').text('www.drtweb.in  |  Pulibor, Jorhat - 785006, Assam', { align: 'right' });
 }
 
-/**
- * Draw an image inside an allocated area with contain-fit centering.
- */
-function drawContainedImage(doc, imgBuffer, boxX, boxY, boxWidth, boxHeight) {
-  try {
-    doc.image(imgBuffer, boxX, boxY, {
-      fit: [boxWidth, boxHeight],
-      align: 'center',
-      valign: 'center',
-    });
-  } catch (err) {
-    console.error('Error drawing image in PDF:', err.message);
-    doc.rect(boxX, boxY, boxWidth, boxHeight).stroke();
-    doc.fontSize(9).text('Image unavailable', boxX, boxY + boxHeight / 2 - 5, {
-      width: boxWidth,
-      align: 'center',
-    });
+// ── Field row ─────────────────────────────────────────────────────
+function drawField(doc, label, value, x, y, w) {
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#333').text(label, x, y, { width: 100, lineBreak: false });
+  doc.font('Helvetica').fontSize(8.5).fillColor('#111').text(String(value || String.fromCharCode(0x2014)), x + 100, y, { width: w - 100, lineBreak: false });
+  return y + 16;
+}
+
+// ── Photo box ─────────────────────────────────────────────────────
+function drawPhoto(doc, buf, label, bx, by, bw, bh) {
+  if (bh < 30) return;
+  doc.rect(bx, by, bw, 18).fill('#0d1b3e');
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#ffffff').text(label, bx + 6, by + 5, { width: bw - 12, lineBreak: false });
+  const py = by + 18, ph = bh - 18;
+  doc.rect(bx, py, bw, ph).lineWidth(0.5).strokeColor('#bbb').stroke();
+  if (buf) {
+    try { doc.image(buf, bx, py, { fit: [bw, ph], align: 'center', valign: 'center' }); }
+    catch(e) { doc.font('Helvetica').fontSize(8).fillColor('#aaa').text('Image unavailable', bx, py + ph/2 - 6, { width: bw, align: 'center' }); }
   }
 }
 
-/**
- * Draw a photo section heading with a filled grey band
- */
-function drawPhotoHeading(doc, label, y) {
-  const bandH = 16;
-  doc.rect(MARGIN, y, CONTENT_WIDTH, bandH).fill('#f0f0f0');
-  doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#1a1a1a');
-  doc.text(label, MARGIN + 6, y + 3, { width: CONTENT_WIDTH - 6 });
-  return y + bandH + 4;
-}
-
-/**
- * Draw a dashed divider line
- */
-function drawDashedLine(doc, y) {
-  doc
-    .moveTo(MARGIN, y)
-    .lineTo(A4_WIDTH - MARGIN, y)
-    .lineWidth(0.3)
-    .dash(3, { space: 3 })
-    .stroke();
-  doc.undash();
-}
-
-/**
- * Generate a 3-page A4 PDF for a solar record.
- *
- * Page 1 – Consumer information + Inverter Photo (photo1)
- * Page 2 – Panel Photo (photo2, upper) + Earth Photo (photo3, lower)
- * Page 3 – LA Photo (photo4, upper) + 5th Photo (photo5, lower, if present)
- *
- * @param {object} record - Mongoose document
- * @returns {PDFDocument} - Pipe the returned document to the response stream
- */
+// ── Main export ───────────────────────────────────────────────────
 async function generatePDF(record) {
-  const memStart = process.memoryUsage();
-  console.log(`[gPDF:1] start — rss:${Math.round(memStart.rss/1024/1024)}MB heap:${Math.round(memStart.heapUsed/1024/1024)}MB`);
+  const m0 = process.memoryUsage();
+  console.log(`[gPDF:1] start rss:${Math.round(m0.rss/1048576)}MB heap:${Math.round(m0.heapUsed/1048576)}MB`);
 
-  // Download each Cloudinary image individually so we can log exactly which one fails
-  console.log('[gPDF:2] downloading photo1 from Cloudinary...');
-  const img1 = await downloadImage(record.photo1.url).catch(e => { throw new Error(`photo1 download failed: ${e.message} — URL: ${record.photo1.url}`); });
-  console.log(`[gPDF:2] photo1 OK — ${img1.length} bytes`);
+  console.log('[gPDF:2] downloading images with Cloudinary resize (w_900,q_80)...');
+  const [img1, img2, img3, img4, img5] = await Promise.all([
+    dlImg(record.photo1.url).catch(e => { console.error('[gPDF] photo1 FAIL:', e.message); return null; }),
+    dlImg(record.photo2.url).catch(e => { console.error('[gPDF] photo2 FAIL:', e.message); return null; }),
+    dlImg(record.photo3.url).catch(e => { console.error('[gPDF] photo3 FAIL:', e.message); return null; }),
+    dlImg(record.photo4.url).catch(e => { console.error('[gPDF] photo4 FAIL:', e.message); return null; }),
+    record.photo5 ? dlImg(record.photo5.url).catch(e => { console.error('[gPDF] photo5 FAIL:', e.message); return null; }) : Promise.resolve(null),
+  ]);
+  console.log('[gPDF:3] sizes: ' + [img1,img2,img3,img4,img5].map((b,i)=>`p${i+1}:${b?Math.round(b.length/1024)+'KB':'FAIL'}`).join(' '));
 
-  console.log('[gPDF:3] downloading photo2...');
-  const img2 = await downloadImage(record.photo2.url).catch(e => { throw new Error(`photo2 download failed: ${e.message}`); });
-  console.log(`[gPDF:3] photo2 OK — ${img2.length} bytes`);
-
-  console.log('[gPDF:4] downloading photo3...');
-  const img3 = await downloadImage(record.photo3.url).catch(e => { throw new Error(`photo3 download failed: ${e.message}`); });
-  console.log(`[gPDF:4] photo3 OK — ${img3.length} bytes`);
-
-  console.log('[gPDF:5] downloading photo4...');
-  const img4 = await downloadImage(record.photo4.url).catch(e => { throw new Error(`photo4 download failed: ${e.message}`); });
-  console.log(`[gPDF:5] photo4 OK — ${img4.length} bytes`);
-
-  let img5 = null;
-  if (record.photo5) {
-    console.log('[gPDF:6] downloading photo5...');
-    img5 = await downloadImage(record.photo5.url).catch(e => { throw new Error(`photo5 download failed: ${e.message}`); });
-    console.log(`[gPDF:6] photo5 OK — ${img5.length} bytes`);
-  }
-
-  // Use pre-loaded logo buffers (read once at module startup, no I/O per request)
-  console.log(`[gPDF:7] logos — pm:${PM_LOGO_BUFFER ? PM_LOGO_BUFFER.length+'b' : 'NULL'} drt:${DRT_LOGO_BUFFER ? DRT_LOGO_BUFFER.length+'b' : 'NULL'}`);
-  const pmLogoBuffer  = PM_LOGO_BUFFER;
-  const drtLogoBuffer = DRT_LOGO_BUFFER;
-
-  console.log('[gPDF:8] creating PDFDocument...');
-  const doc = new PDFDocument({
-    size: 'A4',
-    margin: 0,
-    compress: false,
-    info: {
-      Title: `DRT Enterprise - ${record.consumerName}`,
-      Author: 'DRT Enterprise',
-    },
-  });
-  console.log('[gPDF:9] PDFDocument created, drawing pages...');
-
-
-  // ─────────────────────────────────────────────
-  // PAGE 1 — Consumer Information + Inverter Photo
-  // ─────────────────────────────────────────────
-  let y = MARGIN;
-
-  // ══════════════════════════════════════════════
-  // PROFESSIONAL HEADER
-  // Layout: [PM Logo]   DRT ENTERPRISE   [DRT Logo]
-  // ══════════════════════════════════════════════
-
-  // ── Dimensions ──────────────────────────────
-  const LOGO_BOX_W  = 88;   // PM logo bounding-box width/height
-  const LOGO_BOX_H  = 60;
-  const DRT_LOGO_W  = 108;  // DRT logo — slightly larger
-  const DRT_LOGO_H  = 74;
-
-  const leftLogoX  = MARGIN;
-  const rightLogoX = A4_WIDTH - MARGIN - LOGO_BOX_W;
-  const centreX    = MARGIN + LOGO_BOX_W + 8;
-  const centreW    = A4_WIDTH - MARGIN * 2 - LOGO_BOX_W * 2 - 16;
-
-  // ── PM logo — left ──────────────────────────
-  if (pmLogoBuffer) {
-    try {
-      doc.image(pmLogoBuffer, leftLogoX, y, {
-        fit:    [LOGO_BOX_W, LOGO_BOX_H],
-        align:  'left',
-        valign: 'center',
-      });
-    } catch (e) {
-      console.error('PM logo error:', e.message);
-    }
-  }
-
-  // ── DRT logo — right (larger, shifted left by 15pt) ─
-  if (drtLogoBuffer) {
-    try {
-      doc.image(drtLogoBuffer, rightLogoX - 15, y, {
-        fit:    [DRT_LOGO_W, DRT_LOGO_H],
-        align:  'right',
-        valign: 'center',
-      });
-    } catch (e) {
-      console.error('DRT logo error:', e.message);
-    }
-  }
-
-  // ── Company name — centred between logos ────
-  const nameY = y + LOGO_BOX_H / 2 - 12;
-  doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a1a1a');
-  doc.text('DRT ENTERPRISE', centreX, nameY, {
-    width:     centreW,
-    align:     'center',
-    lineBreak: false,
-  });
-
-  // Tagline
-  doc.font('Helvetica').fontSize(7.5).fillColor('#666666');
-  doc.text('Solar Energy Solutions', centreX, nameY + 20, {
-    width:     centreW,
-    align:     'center',
-    lineBreak: false,
-  });
-
-  // Subtle horizontal rule below tagline (inside logo strip)
-  const accentLineY = nameY + 32;
-  doc
-    .moveTo(centreX + centreW * 0.08, accentLineY)
-    .lineTo(centreX + centreW * 0.92, accentLineY)
-    .lineWidth(0.4)
-    .strokeColor('#bbbbbb')
-    .stroke();
-
-  // ── Double-rule separator under header ───────
-  const separatorY = y + LOGO_BOX_H + 5;
-  doc
-    .moveTo(MARGIN, separatorY)
-    .lineTo(A4_WIDTH - MARGIN, separatorY)
-    .lineWidth(1.2)
-    .strokeColor('#2c3e50')
-    .stroke();
-  doc
-    .moveTo(MARGIN, separatorY + 2.5)
-    .lineTo(A4_WIDTH - MARGIN, separatorY + 2.5)
-    .lineWidth(0.3)
-    .strokeColor('#7f8c8d')
-    .stroke();
-
-  y = separatorY + 10;
-
-  // ── CONSUMER INFORMATION — grey band heading ──
-  const sectionBandH = 18;
-  doc.rect(MARGIN, y, CONTENT_WIDTH, sectionBandH).fill('#f0f0f0');
-  doc.font('Helvetica-Bold').fontSize(10).fillColor('#1a1a1a');
-  doc.text('CONSUMER INFORMATION', MARGIN, y + 4, { width: CONTENT_WIDTH, align: 'center' });
-  y += sectionBandH + 4;
-
-  // ── INFO TABLE ──
-  const labelCol  = MARGIN;
-  const colonCol  = MARGIN + 175;
-  const valueCol  = colonCol + 12;
-  const valueWidth = A4_WIDTH - MARGIN - valueCol;
-
-  const fields = [
-    ['Consumer Name',               record.consumerName],
-    ['Consumer No',                  record.consumerNo],
-    ['Contact Number',               record.contactNumber],
-    ['Application Reference No',     record.applicationReferenceNo],
-    ['Address',                      record.address],
-    ['Plant Capacity',               record.plantCapacity],
-    ['Installation Date',            formatDate(record.installationDate)],
-    ['Sub-Division',                 record.subDivision],
-    ['Date of System Commissioning', formatDate(record.systemCommissioningDate)],
-    ['Vendor Name',                  record.vendorName],
-  ];
-
-  doc.fontSize(10);
-
-  for (let i = 0; i < fields.length; i++) {
-    const [label, value] = fields[i];
-    const valueHeight = doc.heightOfString(String(value || ''), {
-      width: valueWidth,
-      lineGap: 2,
-    });
-    const rowHeight = Math.max(16, valueHeight + 4);
-
-    // Alternating row background
-    if (i % 2 === 0) {
-      doc.rect(MARGIN, y - 1, CONTENT_WIDTH, rowHeight + 2).fill('#fafafa');
-    }
-
-    doc.font('Helvetica-Bold').fillColor('#222222');
-    doc.text(label, labelCol, y, { width: 170, lineBreak: false });
-
-    doc.font('Helvetica').fillColor('#555555');
-    doc.text(':', colonCol, y, { lineBreak: false });
-
-    doc.font('Helvetica').fillColor('#1a1a1a');
-    doc.text(String(value || ''), valueCol, y, { width: valueWidth, lineGap: 2 });
-
-    y += rowHeight + 2;
-  }
-
-  y += 6;
-
-  // Separator before photo section
-  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(0.5).strokeColor('#cccccc').stroke();
-  y += 8;
-
-  // ── INVERTER PHOTO ──
-  y = drawPhotoHeading(doc, 'Inverter Photo', y);
-
-  const photo1BoxY      = y;
-  const photo1BoxHeight = FOOTER_LINE_Y - 10 - photo1BoxY;
-
-  if (photo1BoxHeight > 30) {
-    drawContainedImage(doc, img1, MARGIN, photo1BoxY, CONTENT_WIDTH, photo1BoxHeight);
-  }
-
-  drawFooter(doc);
-
-  // ─────────────────────────────────────────────
-  // PAGE 2 — Panel Photo (upper) + Earth Photo (lower)
-  // ─────────────────────────────────────────────
-  doc.addPage({ size: 'A4', margin: 0 });
-
-  const page2Top         = MARGIN;
-  const totalPage2Height = FOOTER_LINE_Y - 10 - page2Top;
-  const labelHeight      = 18;
-  const gapBetween       = 10;
-  const upperHalfHeight  = Math.floor((totalPage2Height - gapBetween - labelHeight) / 2);
-
-  let p2y = page2Top;
-  p2y = drawPhotoHeading(doc, 'Panel Photo', p2y);
-  const panelBoxHeight = upperHalfHeight - labelHeight;
-  drawContainedImage(doc, img2, MARGIN, p2y, CONTENT_WIDTH, panelBoxHeight);
-  p2y += panelBoxHeight + gapBetween / 2;
-
-  drawDashedLine(doc, p2y);
-  p2y += gapBetween / 2;
-
-  p2y = drawPhotoHeading(doc, 'Earth Photo', p2y);
-  const earthBoxHeight = FOOTER_LINE_Y - 10 - p2y;
-  if (earthBoxHeight > 30) {
-    drawContainedImage(doc, img3, MARGIN, p2y, CONTENT_WIDTH, earthBoxHeight);
-  }
-
-  drawFooter(doc);
-
-  // ─────────────────────────────────────────────
-  // PAGE 3 — LA Photo (upper) + 5th Photo (lower, optional)
-  // ─────────────────────────────────────────────
-  doc.addPage({ size: 'A4', margin: 0 });
-
-  let p3y = MARGIN;
-
-  if (img5) {
-    const totalPage3Height = FOOTER_LINE_Y - 10 - p3y;
-    const upperHeight      = Math.floor((totalPage3Height - gapBetween - labelHeight) / 2);
-
-    p3y = drawPhotoHeading(doc, 'LA Photo', p3y);
-    const laBoxHeight = upperHeight - labelHeight;
-    drawContainedImage(doc, img4, MARGIN, p3y, CONTENT_WIDTH, laBoxHeight);
-    p3y += laBoxHeight + gapBetween / 2;
-
-    drawDashedLine(doc, p3y);
-    p3y += gapBetween / 2;
-
-    p3y = drawPhotoHeading(doc, 'Photograph 5', p3y);
-    const photo5BoxHeight = FOOTER_LINE_Y - 10 - p3y;
-    if (photo5BoxHeight > 30) {
-      drawContainedImage(doc, img5, MARGIN, p3y, CONTENT_WIDTH, photo5BoxHeight);
-    }
-  } else {
-    p3y = drawPhotoHeading(doc, 'LA Photo', p3y);
-    const laBoxHeight = FOOTER_LINE_Y - 10 - p3y;
-    if (laBoxHeight > 30) {
-      drawContainedImage(doc, img4, MARGIN, p3y, CONTENT_WIDTH, laBoxHeight);
-    }
-  }
-
-  drawFooter(doc);
-
-  console.log('[gPDF:10] all pages drawn, collecting PDF bytes...');
+  console.log('[gPDF:4] creating PDFDocument...');
+  const doc = new PDFDocument({ size: 'A4', margin: 0, compress: false,
+    info: { Title: `DRT Enterprise - ${record.consumerName}`, Author: 'DRT Enterprise' } });
   const chunks = [];
-  doc.on('data', (chunk) => chunks.push(chunk));
+  doc.on('data', c => chunks.push(c));
+  const done = new Promise((res, rej) => { doc.on('end', res); doc.on('error', e => rej(new Error('PDFKit: '+e.message))); });
 
-  const endPromise = new Promise((resolve, reject) => {
-    doc.on('end',   resolve);
-    doc.on('error', (err) => reject(new Error(`PDFKit stream error: ${err.message}`)));
-  });
+  // PAGE 1 — Consumer Info + Inverter Photo
+  let y = drawHeader(doc);
+  const CARD_H = 196;
+  doc.rect(MARGIN, y, CW, CARD_H).lineWidth(0.5).strokeColor('#ddd').stroke();
+  doc.rect(MARGIN, y, CW, 22).fill('#eef2ff');
+  doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#0d1b3e').text('CONSUMER INFORMATION', MARGIN + 8, y + 7);
+  doc.moveTo(MARGIN, y+22).lineTo(MARGIN+CW, y+22).lineWidth(0.3).strokeColor('#ddd').stroke();
+  const C1 = MARGIN+8, C2 = MARGIN+CW/2+4, CFW = CW/2-16;
+  let y1 = y+30, y2 = y+30;
+  y1 = drawField(doc,'Consumer Name:',   record.consumerName,             C1,y1,CFW);
+  y1 = drawField(doc,'Consumer No:',     record.consumerNo,               C1,y1,CFW);
+  y1 = drawField(doc,'Contact Number:',  record.contactNumber,            C1,y1,CFW);
+  y1 = drawField(doc,'Application Ref:', record.applicationReferenceNo,   C1,y1,CFW);
+  y1 = drawField(doc,'Address:',         record.address,                  C1,y1,CFW);
+  y1 = drawField(doc,'Sub-Division:',    record.subDivision,              C1,y1,CFW);
+  y2 = drawField(doc,'Plant Capacity:',   record.plantCapacity,                       C2,y2,CFW);
+  y2 = drawField(doc,'Installation Date:',fmtDate(record.installationDate),           C2,y2,CFW);
+  y2 = drawField(doc,'Commissioning:',    fmtDate(record.systemCommissioningDate),    C2,y2,CFW);
+  y2 = drawField(doc,'Vendor Name:',      record.vendorName,                          C2,y2,CFW);
+  y += CARD_H + 10;
+  drawPhoto(doc, img1, 'INVERTER PHOTO', MARGIN, y, CW, FOOTER_Y - 15 - y);
+  drawFooter(doc);
 
+  // PAGE 2 — Panel Photo + Earth Photo
+  doc.addPage({ size: 'A4', margin: 0 });
+  y = drawHeader(doc);
+  const h2 = Math.floor((FOOTER_Y - 15 - y - 10) / 2);
+  drawPhoto(doc, img2, 'PANEL PHOTO', MARGIN, y,       CW, h2);
+  drawPhoto(doc, img3, 'EARTH PHOTO', MARGIN, y+h2+10, CW, h2);
+  drawFooter(doc);
+
+  // PAGE 3 — LA Photo + optional 5th Photo
+  doc.addPage({ size: 'A4', margin: 0 });
+  y = drawHeader(doc);
+  if (img5) {
+    const h3 = Math.floor((FOOTER_Y - 15 - y - 10) / 2);
+    drawPhoto(doc, img4, 'LA PHOTO',     MARGIN, y,      CW, h3);
+    drawPhoto(doc, img5, 'PHOTOGRAPH 5', MARGIN, y+h3+10, CW, h3);
+  } else {
+    drawPhoto(doc, img4, 'LA PHOTO', MARGIN, y, CW, FOOTER_Y - 15 - y);
+  }
+  drawFooter(doc);
+
+  console.log('[gPDF:5] finalizing...');
   doc.end();
-  await endPromise;
-
-  const pdfBuffer = Buffer.concat(chunks);
-  const memEnd = process.memoryUsage();
-  console.log(
-    `[gPDF:11] buffer collected — size:${Math.round(pdfBuffer.length/1024)}KB ` +
-    `rss:${Math.round(memEnd.rss/1024/1024)}MB heap:${Math.round(memEnd.heapUsed/1024/1024)}MB`
-  );
-
-  return pdfBuffer;
+  await done;
+  const buf = Buffer.concat(chunks);
+  const m1 = process.memoryUsage();
+  console.log(`[gPDF:6] done size:${Math.round(buf.length/1024)}KB rss:${Math.round(m1.rss/1048576)}MB`);
+  return buf;
 }
 
 module.exports = { generatePDF };
