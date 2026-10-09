@@ -152,21 +152,17 @@ function drawDashedLine(doc, y) {
 }
 
 /**
- * Generate and STREAM a 3-page A4 PDF directly to outputStream.
- *
- * Pipe-first pattern: doc.pipe(outputStream) is called before any content
- * is drawn, so each page flows to the client as it is generated instead of
- * buffering the entire document in RAM.
+ * Generate a 3-page A4 PDF for a solar record.
  *
  * Page 1 – Consumer information + Inverter Photo (photo1)
  * Page 2 – Panel Photo (photo2, upper) + Earth Photo (photo3, lower)
  * Page 3 – LA Photo (photo4, upper) + 5th Photo (photo5, lower, if present)
  *
- * @param {object} record       - Mongoose document
- * @param {stream.Writable} outputStream - Destination stream (Express res)
+ * @param {object} record - Mongoose document
+ * @returns {PDFDocument} - Pipe the returned document to the response stream
  */
-async function generatePDF(record, outputStream) {
-  // Log memory at start of PDF generation to help diagnose Render OOM events
+async function generatePDF(record) {
+  // Log memory at start of PDF generation
   const memStart = process.memoryUsage();
   console.log(
     `[PDF] start — rss:${Math.round(memStart.rss/1024/1024)}MB ` +
@@ -174,8 +170,7 @@ async function generatePDF(record, outputStream) {
   );
 
   // Download record images in parallel.
-  // Cloudinary serves optimised/compressed JPEGs (typically 200–500 KB each),
-  // so peak RAM from 4–5 images is ~2–3 MB — well within free-tier limits.
+  // Cloudinary serves optimised/compressed JPEGs (~200–500 KB each).
   const imageDownloads = [
     downloadImage(record.photo1.url),
     downloadImage(record.photo2.url),
@@ -198,11 +193,6 @@ async function generatePDF(record, outputStream) {
       Author: 'DRT Enterprise',
     },
   });
-
-  // ── PIPE BEFORE DRAWING ──────────────────────────────────────────────────
-  // Streaming pattern: data flows to the client page-by-page as it is drawn.
-  // The entire PDF is never held in memory at once.
-  doc.pipe(outputStream);
 
   // ─────────────────────────────────────────────
   // PAGE 1 — Consumer Information + Inverter Photo
@@ -429,18 +419,13 @@ async function generatePDF(record, outputStream) {
 
   doc.end();
 
-  // Wait for the PDF stream to fully flush to outputStream before resolving.
-  // This ensures the controller's await completes only after all bytes are sent.
-  await new Promise((resolve, reject) => {
-    doc.on('end',   resolve);
-    doc.on('error', reject);
-  });
-
   const memEnd = process.memoryUsage();
   console.log(
-    `[PDF] end   — rss:${Math.round(memEnd.rss/1024/1024)}MB ` +
+    `[PDF] end — rss:${Math.round(memEnd.rss/1024/1024)}MB ` +
     `heap:${Math.round(memEnd.heapUsed/1024/1024)}/${Math.round(memEnd.heapTotal/1024/1024)}MB`
   );
+
+  return doc;
 }
 
 module.exports = { generatePDF };

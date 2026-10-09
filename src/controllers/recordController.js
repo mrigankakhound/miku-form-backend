@@ -256,10 +256,8 @@ const generateRecordPDF = async (req, res) => {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
 
-    // generatePDF pipes directly to res and resolves when fully streamed.
-    // Headers are set above but not yet sent — if an error is thrown during
-    // image downloads (before doc.pipe), the catch block can still send JSON.
-    await generatePDF(record, res);
+    const pdfDoc = await generatePDF(record);
+    pdfDoc.pipe(res);
   } catch (err) {
     console.error('generateRecordPDF error:', err);
     if (!res.headersSent) {
