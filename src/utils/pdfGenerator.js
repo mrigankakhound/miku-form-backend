@@ -424,15 +424,30 @@ async function generatePDF(record) {
 
   drawFooter(doc);
 
-  doc.end();
+  // Collect all PDF bytes via 'data' events, then return complete Buffer.
+  // This avoids Node.js stream pipe timing issues (especially on Node 24+)
+  // where piping an already-ended Readable can result in a hung response.
+  const chunks = [];
+  doc.on('data', (chunk) => chunks.push(chunk));
+
+  const endPromise = new Promise((resolve, reject) => {
+    doc.on('end',   resolve);
+    doc.on('error', reject);
+  });
+
+  doc.end();           // triggers 'data' + 'end' events
+  await endPromise;   // wait for all bytes to be collected
+
+  const pdfBuffer = Buffer.concat(chunks);
 
   const memEnd = process.memoryUsage();
   console.log(
     `[PDF] end — rss:${Math.round(memEnd.rss/1024/1024)}MB ` +
-    `heap:${Math.round(memEnd.heapUsed/1024/1024)}/${Math.round(memEnd.heapTotal/1024/1024)}MB`
+    `heap:${Math.round(memEnd.heapUsed/1024/1024)}/${Math.round(memEnd.heapTotal/1024/1024)}MB ` +
+    `pdfSize:${Math.round(pdfBuffer.length/1024)}KB`
   );
 
-  return doc;
+  return pdfBuffer;
 }
 
 module.exports = { generatePDF };
