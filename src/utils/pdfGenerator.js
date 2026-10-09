@@ -19,13 +19,13 @@ try {
 }
 
 /**
- * Download image buffer from URL.
- * Returns response.data directly — on Node.js, axios arraybuffer is already
- * a Buffer, so wrapping in Buffer.from() was creating a wasteful copy.
+ * Download image as a Node.js Buffer.
+ * axios 1.x with responseType:'arraybuffer' returns a true ArrayBuffer on Node.js.
+ * Buffer.from() converts it to what PDFKit expects.
  */
 async function downloadImage(url) {
   const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
-  return response.data;
+  return Buffer.from(response.data); // ArrayBuffer → Buffer (required by PDFKit)
 }
 
 const A4_WIDTH = 595.28;

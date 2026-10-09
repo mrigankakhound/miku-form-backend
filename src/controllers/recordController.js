@@ -257,6 +257,10 @@ const generateRecordPDF = async (req, res) => {
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
 
     const pdfDoc = await generatePDF(record);
+    // Guard against stream errors (e.g. client disconnects mid-transfer).
+    // Without this listener, an 'error' event on pdfDoc has no handler and
+    // crashes the entire Node.js process.
+    pdfDoc.on('error', (err) => console.error('[PDF stream error]', err.message));
     pdfDoc.pipe(res);
   } catch (err) {
     console.error('generateRecordPDF error:', err);

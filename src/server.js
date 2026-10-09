@@ -43,9 +43,15 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error.' });
 });
 
-// Prevent unhandled promise rejections from silently crashing the process
+// Prevent unhandled promise rejections from crashing the process
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason instanceof Error ? reason.message : reason);
+});
+
+// Prevent uncaught exceptions (e.g. stream pipe errors on client disconnect)
+// from crashing the process. Log and keep running.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err.message);
 });
 
 app.listen(PORT, () => {
