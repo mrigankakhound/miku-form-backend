@@ -4,7 +4,7 @@
   "description": "DRT Enterprise Solar System Records - Backend API",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node --max-old-space-size=384 src/server.js",
     "dev": "nodemon src/server.js"
   },
   "dependencies": {

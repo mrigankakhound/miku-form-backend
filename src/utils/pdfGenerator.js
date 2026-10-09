@@ -18,7 +18,16 @@ try {
   console.error('[logos] failed to load bundled assets:', e.message);
 }
 
-// A4 dimensions in points
+/**
+ * Download image buffer from URL.
+ * Returns response.data directly — on Node.js, axios arraybuffer is already
+ * a Buffer, so wrapping in Buffer.from() was creating a wasteful copy.
+ */
+async function downloadImage(url) {
+  const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
+  return response.data;
+}
+
 const A4_WIDTH = 595.28;
 const A4_HEIGHT = 841.89;
 const MARGIN = 40;
@@ -28,13 +37,7 @@ const CONTENT_WIDTH = A4_WIDTH - MARGIN * 2;
 const FOOTER_HEIGHT = 55;
 const FOOTER_LINE_Y = A4_HEIGHT - FOOTER_HEIGHT - 5;
 
-/**
- * Download image buffer from URL
- */
-async function downloadImage(url) {
-  const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
-  return Buffer.from(response.data);
-}
+
 
 /**
  * Format a date to DD/MM/YYYY
@@ -188,11 +191,15 @@ async function generatePDF(record) {
   const doc = new PDFDocument({
     size: 'A4',
     margin: 0,
+    compress: false, // JPEG images are already compressed; disabling PDF
+                     // compression eliminates zlib's C++ buffer allocations
+                     // which inflate RSS on Render's memory-constrained tier.
     info: {
       Title: `DRT Enterprise - ${record.consumerName}`,
       Author: 'DRT Enterprise',
     },
   });
+
 
   // ─────────────────────────────────────────────
   // PAGE 1 — Consumer Information + Inverter Photo
