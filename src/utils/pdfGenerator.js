@@ -1,5 +1,7 @@
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
+const fs   = require('fs');
+const path = require('path');
 
 // A4 dimensions in points
 const A4_WIDTH = 595.28;
@@ -158,17 +160,28 @@ async function generatePDF(record) {
 
   const [img1, img2, img3, img4, img5] = await Promise.all(imageDownloads);
 
-  // Load logo buffers from the live frontend URL
-  // Logos live in frontend/public/ → copied to dist/ by Vite build → served at /form/
+  // Load logos — prefer reading from disk (works locally without internet).
+  // Falls back to the live production URL if the local file is absent (production deploy).
+  const LOGO_DIR      = path.resolve(__dirname, '../../../frontend/public');
   const FRONTEND_BASE = 'https://drtweb.in/form';
+
+  async function loadLogo(filename) {
+    const localPath = path.join(LOGO_DIR, filename);
+    if (fs.existsSync(localPath)) {
+      return fs.readFileSync(localPath);
+    }
+    // fallback: fetch from production URL
+    return downloadImage(`${FRONTEND_BASE}/${filename}`);
+  }
+
   let pmLogoBuffer, drtLogoBuffer;
   try {
     [pmLogoBuffer, drtLogoBuffer] = await Promise.all([
-      downloadImage(`${FRONTEND_BASE}/pm.png`),
-      downloadImage(`${FRONTEND_BASE}/DRTlogo.png`),
+      loadLogo('pm.png'),
+      loadLogo('DRTlogo.png'),
     ]);
   } catch (e) {
-    console.error('Logo download error:', e.message);
+    console.error('Logo load error:', e.message);
     pmLogoBuffer  = null;
     drtLogoBuffer = null;
   }
@@ -187,23 +200,28 @@ async function generatePDF(record) {
   // ─────────────────────────────────────────────
   let y = MARGIN;
 
-  // ── PROFESSIONAL HEADER ──
-  // Layout: [PM Logo]  DRT ENTERPRISE / tagline  [DRT Logo]
-  const LOGO_BOX_W = 90;
-  const LOGO_BOX_H = 62;
-  const HEADER_H   = LOGO_BOX_H + 2;
+  // ══════════════════════════════════════════════
+  // PROFESSIONAL HEADER
+  // Layout: [PM Logo]   DRT ENTERPRISE   [DRT Logo]
+  // ══════════════════════════════════════════════
+
+  // ── Dimensions ──────────────────────────────
+  const LOGO_BOX_W  = 88;   // PM logo bounding-box width/height
+  const LOGO_BOX_H  = 60;
+  const DRT_LOGO_W  = 108;  // DRT logo — slightly larger
+  const DRT_LOGO_H  = 74;
 
   const leftLogoX  = MARGIN;
   const rightLogoX = A4_WIDTH - MARGIN - LOGO_BOX_W;
-  const centreX    = MARGIN + LOGO_BOX_W + 6;
-  const centreW    = A4_WIDTH - MARGIN * 2 - LOGO_BOX_W * 2 - 12;
+  const centreX    = MARGIN + LOGO_BOX_W + 8;
+  const centreW    = A4_WIDTH - MARGIN * 2 - LOGO_BOX_W * 2 - 16;
 
-  // Draw PM logo — left
+  // ── PM logo — left ──────────────────────────
   if (pmLogoBuffer) {
     try {
       doc.image(pmLogoBuffer, leftLogoX, y, {
-        fit: [LOGO_BOX_W, LOGO_BOX_H],
-        align: 'left',
+        fit:    [LOGO_BOX_W, LOGO_BOX_H],
+        align:  'left',
         valign: 'center',
       });
     } catch (e) {
@@ -211,12 +229,12 @@ async function generatePDF(record) {
     }
   }
 
-  // Draw DRT logo — right (larger)
+  // ── DRT logo — right (larger, shifted left by 15pt) ─
   if (drtLogoBuffer) {
     try {
-      doc.image(drtLogoBuffer, rightLogoX - 25, y, {
-        fit: [115, 78],
-        align: 'right',
+      doc.image(drtLogoBuffer, rightLogoX - 15, y, {
+        fit:    [DRT_LOGO_W, DRT_LOGO_H],
+        align:  'right',
         valign: 'center',
       });
     } catch (e) {
@@ -224,31 +242,48 @@ async function generatePDF(record) {
     }
   }
 
-  // Company name — vertically centred between logos
-  const nameY = y + (LOGO_BOX_H / 2) - 10;
-  doc.font('Helvetica-Bold').fontSize(15).fillColor('#1a1a1a');
-  doc.text('DRT ENTERPRISE', centreX, nameY, { width: centreW, align: 'center', lineBreak: false });
+  // ── Company name — centred between logos ────
+  const nameY = y + LOGO_BOX_H / 2 - 12;
+  doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a1a1a');
+  doc.text('DRT ENTERPRISE', centreX, nameY, {
+    width:     centreW,
+    align:     'center',
+    lineBreak: false,
+  });
 
   // Tagline
-  doc.font('Helvetica').fontSize(8).fillColor('#555555');
-  doc.text('Solar Energy Solutions', centreX, nameY + 19, { width: centreW, align: 'center', lineBreak: false });
+  doc.font('Helvetica').fontSize(7.5).fillColor('#666666');
+  doc.text('Solar Energy Solutions', centreX, nameY + 20, {
+    width:     centreW,
+    align:     'center',
+    lineBreak: false,
+  });
 
-  // Thin accent line below tagline
-  const accentLineY = nameY + 31;
+  // Subtle horizontal rule below tagline (inside logo strip)
+  const accentLineY = nameY + 32;
   doc
-    .moveTo(centreX + centreW * 0.1, accentLineY)
-    .lineTo(centreX + centreW * 0.9, accentLineY)
-    .lineWidth(0.5)
-    .strokeColor('#aaaaaa')
+    .moveTo(centreX + centreW * 0.08, accentLineY)
+    .lineTo(centreX + centreW * 0.92, accentLineY)
+    .lineWidth(0.4)
+    .strokeColor('#bbbbbb')
     .stroke();
 
-  y = MARGIN + HEADER_H + 4;
+  // ── Double-rule separator under header ───────
+  const separatorY = y + LOGO_BOX_H + 5;
+  doc
+    .moveTo(MARGIN, separatorY)
+    .lineTo(A4_WIDTH - MARGIN, separatorY)
+    .lineWidth(1.2)
+    .strokeColor('#2c3e50')
+    .stroke();
+  doc
+    .moveTo(MARGIN, separatorY + 2.5)
+    .lineTo(A4_WIDTH - MARGIN, separatorY + 2.5)
+    .lineWidth(0.3)
+    .strokeColor('#7f8c8d')
+    .stroke();
 
-  // Double rule under header (mirrors footer)
-  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(1).strokeColor('#1a1a1a').stroke();
-  y += 3;
-  doc.moveTo(MARGIN, y).lineTo(A4_WIDTH - MARGIN, y).lineWidth(0.3).strokeColor('#555555').stroke();
-  y += 10;
+  y = separatorY + 10;
 
   // ── CONSUMER INFORMATION — grey band heading ──
   const sectionBandH = 18;
