@@ -29,7 +29,7 @@ const FOOTER_Y = A4_H - 52;
 // This is the PRIMARY memory fix for Render free tier OOM.
 function cdnSmall(url) {
   if (!url || !url.includes('res.cloudinary.com')) return url;
-  return url.replace('/upload/', '/upload/w_900,q_80,c_limit,f_jpg/');
+  return url.replace('/upload/', '/upload/w_600,q_75,c_limit,f_jpg/');
 }
 
 // ── Download image Buffer ─────────────────────────────────────────
@@ -50,28 +50,51 @@ function fmtDate(d) {
 // ── Header: [PM Logo] DRT ENTERPRISE [DRT Logo] ───────────────────
 function drawHeader(doc) {
   const H = 82;
+
+  // Dark navy background
   doc.rect(0, 0, A4_W, H).fill('#0d1b3e');
+  // Gold accent line
   doc.moveTo(0, H).lineTo(A4_W, H).lineWidth(2.5).strokeColor('#f4c430').stroke();
-  if (PM_LOGO)  { try { doc.image(PM_LOGO,  MARGIN, 11, { width: 88, fit: [88, 60] }); } catch(_){} }
-  if (DRT_LOGO) { try { doc.image(DRT_LOGO, A4_W - MARGIN - 123, 4, { width: 108, fit: [108, 74] }); } catch(_){} }
+
+  // Clip logos strictly to header band so image text doesn't overflow
+  doc.save();
+  doc.rect(0, 0, A4_W, H).clip();
+  if (PM_LOGO)  { try { doc.image(PM_LOGO,  MARGIN, 8,                   { fit: [88, 66],   align: 'center', valign: 'center' }); } catch(_){} }
+  if (DRT_LOGO) { try { doc.image(DRT_LOGO, A4_W - MARGIN - 123, 2,      { fit: [108, 78],  align: 'center', valign: 'center' }); } catch(_){} }
+  doc.restore();
+
+  // Centred title text (drawn on top of logos)
   doc.font('Helvetica-Bold').fontSize(18).fillColor('#ffffff');
   doc.text('DRT ENTERPRISE', 0, 18, { align: 'center', width: A4_W });
-  doc.font('Helvetica').fontSize(8.5).fillColor('#90b4ff');
+  doc.font('Helvetica').fontSize(8.5).fillColor('#ffffff');  // white, not blue
   doc.text('Solar System Installation Record', 0, 43, { align: 'center', width: A4_W });
+
   return H + 10;
 }
 
 // ── Footer ────────────────────────────────────────────────────────
 function drawFooter(doc) {
-  doc.moveTo(MARGIN, FOOTER_Y).lineTo(A4_W - MARGIN, FOOTER_Y).lineWidth(1).strokeColor('#222').stroke();
-  doc.moveTo(MARGIN, FOOTER_Y + 2.5).lineTo(A4_W - MARGIN, FOOTER_Y + 2.5).lineWidth(0.3).strokeColor('#999').stroke();
-  const R1 = FOOTER_Y + 10;
-  const R2 = FOOTER_Y + 23;
-  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#444');
-  doc.text('GSTIN: ', MARGIN, R1, { continued: true }); doc.font('Helvetica').fillColor('#111').text('18ABXFM0804A1ZE');
-  doc.font('Helvetica-Bold').fillColor('#444').text('Contact: ', MARGIN, R2, { continued: true }); doc.font('Helvetica').fillColor('#111').text('+91 7002322258  |  +91 8254028956');
-  doc.font('Helvetica-Bold').fillColor('#444').text('Email: ', 0, R1, { align: 'right', width: A4_W - MARGIN, continued: true }); doc.font('Helvetica').fillColor('#111').text('contact@drtweb.in', { align: 'right' });
-  doc.font('Helvetica-Bold').fillColor('#444').text('Web: ', 0, R2, { align: 'right', width: A4_W - MARGIN, continued: true }); doc.font('Helvetica').fillColor('#111').text('www.drtweb.in  |  Pulibor, Jorhat - 785006, Assam', { align: 'right' });
+  // Double separator line
+  doc.moveTo(MARGIN, FOOTER_Y).lineTo(A4_W - MARGIN, FOOTER_Y)
+     .lineWidth(1).strokeColor('#222').stroke();
+  doc.moveTo(MARGIN, FOOTER_Y + 3).lineTo(A4_W - MARGIN, FOOTER_Y + 3)
+     .lineWidth(0.3).strokeColor('#999').stroke();
+
+  const R1 = FOOTER_Y + 11;
+  const R2 = FOOTER_Y + 24;
+  const LW = CW / 2 - 10;  // left column width
+  const RX = MARGIN + CW / 2 + 10; // right column x
+  const RW = CW / 2 - 10;  // right column width
+
+  doc.font('Helvetica').fontSize(7.5).fillColor('#222');
+
+  // Left column
+  doc.text('GSTIN: 18ABXFM0804A1ZE',                  MARGIN, R1, { width: LW, lineBreak: false });
+  doc.text('Contact: +91 7002322258 | +91 8254028956', MARGIN, R2, { width: LW, lineBreak: false });
+
+  // Right column (right-aligned)
+  doc.text('Email: contact@drtweb.in',                                  RX, R1, { width: RW, align: 'right', lineBreak: false });
+  doc.text('Web: www.drtweb.in | Pulibor, Jorhat - 785006, Assam',      RX, R2, { width: RW, align: 'right', lineBreak: false });
 }
 
 // ── Field row ─────────────────────────────────────────────────────
