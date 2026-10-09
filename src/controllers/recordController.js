@@ -237,15 +237,22 @@ const deleteRecord = async (req, res) => {
  * Generate and stream a 3-page A4 PDF for the record.
  */
 const generateRecordPDF = async (req, res) => {
+  const id = req.params.id;
+  console.log(`[PDF:1] request received — id: ${id}`);
+
   try {
-    if (!isValidObjectId(req.params.id)) {
+    if (!isValidObjectId(id)) {
+      console.log('[PDF:ERR] invalid object id');
       return res.status(400).json({ error: 'Invalid record ID.' });
     }
 
-    const record = await SolarRecord.findById(req.params.id);
+    console.log('[PDF:2] looking up record in MongoDB...');
+    const record = await SolarRecord.findById(id);
     if (!record) {
+      console.log('[PDF:ERR] record not found');
       return res.status(404).json({ error: 'Record not found.' });
     }
+    console.log(`[PDF:3] record found — consumer: ${record.consumerNo}`);
 
     // Sanitize consumer number for filename
     const safeConsumerNo = (record.consumerNo || 'unknown')
@@ -253,18 +260,21 @@ const generateRecordPDF = async (req, res) => {
       .substring(0, 50);
     const filename = `DRT-Enterprise-${safeConsumerNo}.pdf`;
 
+    console.log('[PDF:4] calling generatePDF...');
+    const pdfBuffer = await generatePDF(record);
+    console.log(`[PDF:5] generatePDF done — buffer size: ${pdfBuffer.length} bytes`);
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-
-    // generatePDF returns a complete Buffer — send it directly.
-    // Avoids stream pipe timing issues on Node.js 24+.
-    const pdfBuffer = await generatePDF(record);
     res.setHeader('Content-Length', pdfBuffer.length);
+    console.log('[PDF:6] sending response...');
     res.end(pdfBuffer);
+    console.log('[PDF:7] response sent OK');
   } catch (err) {
-    console.error('generateRecordPDF error:', err);
+    console.error(`[PDF:ERR] UNCAUGHT — ${err.message}`);
+    console.error(err.stack);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Unable to generate PDF.' });
+      res.status(500).json({ error: `PDF generation failed: ${err.message}` });
     }
   }
 };

@@ -165,40 +165,49 @@ function drawDashedLine(doc, y) {
  * @returns {PDFDocument} - Pipe the returned document to the response stream
  */
 async function generatePDF(record) {
-  // Log memory at start of PDF generation
   const memStart = process.memoryUsage();
-  console.log(
-    `[PDF] start — rss:${Math.round(memStart.rss/1024/1024)}MB ` +
-    `heap:${Math.round(memStart.heapUsed/1024/1024)}/${Math.round(memStart.heapTotal/1024/1024)}MB`
-  );
+  console.log(`[gPDF:1] start — rss:${Math.round(memStart.rss/1024/1024)}MB heap:${Math.round(memStart.heapUsed/1024/1024)}MB`);
 
-  // Download record images in parallel.
-  // Cloudinary serves optimised/compressed JPEGs (~200–500 KB each).
-  const imageDownloads = [
-    downloadImage(record.photo1.url),
-    downloadImage(record.photo2.url),
-    downloadImage(record.photo3.url),
-    downloadImage(record.photo4.url),
-  ];
-  if (record.photo5) imageDownloads.push(downloadImage(record.photo5.url));
+  // Download each Cloudinary image individually so we can log exactly which one fails
+  console.log('[gPDF:2] downloading photo1 from Cloudinary...');
+  const img1 = await downloadImage(record.photo1.url).catch(e => { throw new Error(`photo1 download failed: ${e.message} — URL: ${record.photo1.url}`); });
+  console.log(`[gPDF:2] photo1 OK — ${img1.length} bytes`);
 
-  const [img1, img2, img3, img4, img5] = await Promise.all(imageDownloads);
+  console.log('[gPDF:3] downloading photo2...');
+  const img2 = await downloadImage(record.photo2.url).catch(e => { throw new Error(`photo2 download failed: ${e.message}`); });
+  console.log(`[gPDF:3] photo2 OK — ${img2.length} bytes`);
+
+  console.log('[gPDF:4] downloading photo3...');
+  const img3 = await downloadImage(record.photo3.url).catch(e => { throw new Error(`photo3 download failed: ${e.message}`); });
+  console.log(`[gPDF:4] photo3 OK — ${img3.length} bytes`);
+
+  console.log('[gPDF:5] downloading photo4...');
+  const img4 = await downloadImage(record.photo4.url).catch(e => { throw new Error(`photo4 download failed: ${e.message}`); });
+  console.log(`[gPDF:5] photo4 OK — ${img4.length} bytes`);
+
+  let img5 = null;
+  if (record.photo5) {
+    console.log('[gPDF:6] downloading photo5...');
+    img5 = await downloadImage(record.photo5.url).catch(e => { throw new Error(`photo5 download failed: ${e.message}`); });
+    console.log(`[gPDF:6] photo5 OK — ${img5.length} bytes`);
+  }
 
   // Use pre-loaded logo buffers (read once at module startup, no I/O per request)
+  console.log(`[gPDF:7] logos — pm:${PM_LOGO_BUFFER ? PM_LOGO_BUFFER.length+'b' : 'NULL'} drt:${DRT_LOGO_BUFFER ? DRT_LOGO_BUFFER.length+'b' : 'NULL'}`);
   const pmLogoBuffer  = PM_LOGO_BUFFER;
   const drtLogoBuffer = DRT_LOGO_BUFFER;
 
+  console.log('[gPDF:8] creating PDFDocument...');
   const doc = new PDFDocument({
     size: 'A4',
     margin: 0,
-    compress: false, // JPEG images are already compressed; disabling PDF
-                     // compression eliminates zlib's C++ buffer allocations
-                     // which inflate RSS on Render's memory-constrained tier.
+    compress: false,
     info: {
       Title: `DRT Enterprise - ${record.consumerName}`,
       Author: 'DRT Enterprise',
     },
   });
+  console.log('[gPDF:9] PDFDocument created, drawing pages...');
 
 
   // ─────────────────────────────────────────────
@@ -424,27 +433,23 @@ async function generatePDF(record) {
 
   drawFooter(doc);
 
-  // Collect all PDF bytes via 'data' events, then return complete Buffer.
-  // This avoids Node.js stream pipe timing issues (especially on Node 24+)
-  // where piping an already-ended Readable can result in a hung response.
+  console.log('[gPDF:10] all pages drawn, collecting PDF bytes...');
   const chunks = [];
   doc.on('data', (chunk) => chunks.push(chunk));
 
   const endPromise = new Promise((resolve, reject) => {
     doc.on('end',   resolve);
-    doc.on('error', reject);
+    doc.on('error', (err) => reject(new Error(`PDFKit stream error: ${err.message}`)));
   });
 
-  doc.end();           // triggers 'data' + 'end' events
-  await endPromise;   // wait for all bytes to be collected
+  doc.end();
+  await endPromise;
 
   const pdfBuffer = Buffer.concat(chunks);
-
   const memEnd = process.memoryUsage();
   console.log(
-    `[PDF] end — rss:${Math.round(memEnd.rss/1024/1024)}MB ` +
-    `heap:${Math.round(memEnd.heapUsed/1024/1024)}/${Math.round(memEnd.heapTotal/1024/1024)}MB ` +
-    `pdfSize:${Math.round(pdfBuffer.length/1024)}KB`
+    `[gPDF:11] buffer collected — size:${Math.round(pdfBuffer.length/1024)}KB ` +
+    `rss:${Math.round(memEnd.rss/1024/1024)}MB heap:${Math.round(memEnd.heapUsed/1024/1024)}MB`
   );
 
   return pdfBuffer;
