@@ -3,6 +3,21 @@ const axios = require('axios');
 const fs   = require('fs');
 const path = require('path');
 
+// ── Logos loaded ONCE at startup from bundled assets ──────────────────────────
+// Stored as module-level Buffers so every PDF request reuses the same data
+// without any disk I/O or network call.
+const ASSETS_DIR = path.join(__dirname, '..', 'assets');
+
+let PM_LOGO_BUFFER  = null;
+let DRT_LOGO_BUFFER = null;
+try {
+  PM_LOGO_BUFFER  = fs.readFileSync(path.join(ASSETS_DIR, 'pm.png'));
+  DRT_LOGO_BUFFER = fs.readFileSync(path.join(ASSETS_DIR, 'DRTlogo.png'));
+  console.log('[logos] loaded from bundled assets');
+} catch (e) {
+  console.error('[logos] failed to load bundled assets:', e.message);
+}
+
 // A4 dimensions in points
 const A4_WIDTH = 595.28;
 const A4_HEIGHT = 841.89;
@@ -151,47 +166,25 @@ async function generatePDF(record) {
   const memStart = process.memoryUsage();
   console.log(
     `[PDF] start — rss:${Math.round(memStart.rss/1024/1024)}MB ` +
-    `heap:${Math.round(memStart.heapUsed/1024/1024)}/${Math.round(memStart.heapTotal/1024/1024)}MB ` +
-    `ext:${Math.round(memStart.external/1024/1024)}MB`
+    `heap:${Math.round(memStart.heapUsed/1024/1024)}/${Math.round(memStart.heapTotal/1024/1024)}MB`
   );
 
-  // Download record images SEQUENTIALLY to avoid spiking RAM with parallel buffers.
-  // Peak memory: ~1 image in flight at a time rather than 4–5 simultaneously.
-  const img1 = await downloadImage(record.photo1.url);
-  const img2 = await downloadImage(record.photo2.url);
-  const img3 = await downloadImage(record.photo3.url);
-  const img4 = await downloadImage(record.photo4.url);
-  const img5 = record.photo5 ? await downloadImage(record.photo5.url) : null;
+  // Download record images in parallel.
+  // Cloudinary serves optimised/compressed JPEGs (typically 200–500 KB each),
+  // so peak RAM from 4–5 images is ~2–3 MB — well within free-tier limits.
+  const imageDownloads = [
+    downloadImage(record.photo1.url),
+    downloadImage(record.photo2.url),
+    downloadImage(record.photo3.url),
+    downloadImage(record.photo4.url),
+  ];
+  if (record.photo5) imageDownloads.push(downloadImage(record.photo5.url));
 
-  // Load logos — prefer reading from disk (works locally without internet).
-  // Falls back to the live production URL with a short timeout.
-  // Each logo is loaded independently so one failure never blocks the other.
-  const LOGO_DIR      = path.resolve(__dirname, '../../../frontend/public');
-  const FRONTEND_BASE = 'https://drtweb.in/form';
+  const [img1, img2, img3, img4, img5] = await Promise.all(imageDownloads);
 
-  async function loadLogo(filename) {
-    const localPath = path.join(LOGO_DIR, filename);
-    if (fs.existsSync(localPath)) {
-      return fs.readFileSync(localPath);
-    }
-    // fallback: fetch from production URL with a tight 5s timeout
-    const response = await axios.get(`${FRONTEND_BASE}/${filename}`, {
-      responseType: 'arraybuffer',
-      timeout: 5000,
-    });
-    return Buffer.from(response.data);
-  }
-
-  const [pmLogoBuffer, drtLogoBuffer] = await Promise.all([
-    loadLogo('pm.png').catch((e) => {
-      console.error('PM logo load failed:', e.message);
-      return null;
-    }),
-    loadLogo('DRTlogo.png').catch((e) => {
-      console.error('DRT logo load failed:', e.message);
-      return null;
-    }),
-  ]);
+  // Use pre-loaded logo buffers (read once at module startup, no I/O per request)
+  const pmLogoBuffer  = PM_LOGO_BUFFER;
+  const drtLogoBuffer = DRT_LOGO_BUFFER;
 
   const doc = new PDFDocument({
     size: 'A4',
@@ -424,12 +417,6 @@ async function generatePDF(record) {
   }
 
   drawFooter(doc);
-
-  // Hint to GC: release image buffers as soon as all pages are drawn,
-  // before the PDF stream finishes flushing to the client.
-  // eslint-disable-next-line no-unused-vars
-  let img1r = img1, img2r = img2, img3r = img3, img4r = img4, img5r = img5;
-  img1r = img2r = img3r = img4r = img5r = null;
 
   doc.end();
 
