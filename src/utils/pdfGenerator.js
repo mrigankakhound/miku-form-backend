@@ -161,7 +161,8 @@ async function generatePDF(record) {
   const [img1, img2, img3, img4, img5] = await Promise.all(imageDownloads);
 
   // Load logos — prefer reading from disk (works locally without internet).
-  // Falls back to the live production URL if the local file is absent (production deploy).
+  // Falls back to the live production URL with a short timeout.
+  // Each logo is loaded independently so one failure never blocks the other.
   const LOGO_DIR      = path.resolve(__dirname, '../../../frontend/public');
   const FRONTEND_BASE = 'https://drtweb.in/form';
 
@@ -170,21 +171,24 @@ async function generatePDF(record) {
     if (fs.existsSync(localPath)) {
       return fs.readFileSync(localPath);
     }
-    // fallback: fetch from production URL
-    return downloadImage(`${FRONTEND_BASE}/${filename}`);
+    // fallback: fetch from production URL with a tight 5s timeout
+    const response = await axios.get(`${FRONTEND_BASE}/${filename}`, {
+      responseType: 'arraybuffer',
+      timeout: 5000,
+    });
+    return Buffer.from(response.data);
   }
 
-  let pmLogoBuffer, drtLogoBuffer;
-  try {
-    [pmLogoBuffer, drtLogoBuffer] = await Promise.all([
-      loadLogo('pm.png'),
-      loadLogo('DRTlogo.png'),
-    ]);
-  } catch (e) {
-    console.error('Logo load error:', e.message);
-    pmLogoBuffer  = null;
-    drtLogoBuffer = null;
-  }
+  const [pmLogoBuffer, drtLogoBuffer] = await Promise.all([
+    loadLogo('pm.png').catch((e) => {
+      console.error('PM logo load failed:', e.message);
+      return null;
+    }),
+    loadLogo('DRTlogo.png').catch((e) => {
+      console.error('DRT logo load failed:', e.message);
+      return null;
+    }),
+  ]);
 
   const doc = new PDFDocument({
     size: 'A4',
