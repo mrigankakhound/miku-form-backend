@@ -152,16 +152,20 @@ function drawDashedLine(doc, y) {
 }
 
 /**
- * Generate a 3-page A4 PDF for a solar record.
+ * Generate and STREAM a 3-page A4 PDF directly to outputStream.
+ *
+ * Pipe-first pattern: doc.pipe(outputStream) is called before any content
+ * is drawn, so each page flows to the client as it is generated instead of
+ * buffering the entire document in RAM.
  *
  * Page 1 – Consumer information + Inverter Photo (photo1)
  * Page 2 – Panel Photo (photo2, upper) + Earth Photo (photo3, lower)
  * Page 3 – LA Photo (photo4, upper) + 5th Photo (photo5, lower, if present)
  *
- * @param {object} record - Mongoose document
- * @returns {PDFDocument} - PDFKit document (pipe to response)
+ * @param {object} record       - Mongoose document
+ * @param {stream.Writable} outputStream - Destination stream (Express res)
  */
-async function generatePDF(record) {
+async function generatePDF(record, outputStream) {
   // Log memory at start of PDF generation to help diagnose Render OOM events
   const memStart = process.memoryUsage();
   console.log(
@@ -194,6 +198,11 @@ async function generatePDF(record) {
       Author: 'DRT Enterprise',
     },
   });
+
+  // ── PIPE BEFORE DRAWING ──────────────────────────────────────────────────
+  // Streaming pattern: data flows to the client page-by-page as it is drawn.
+  // The entire PDF is never held in memory at once.
+  doc.pipe(outputStream);
 
   // ─────────────────────────────────────────────
   // PAGE 1 — Consumer Information + Inverter Photo
@@ -420,13 +429,18 @@ async function generatePDF(record) {
 
   doc.end();
 
+  // Wait for the PDF stream to fully flush to outputStream before resolving.
+  // This ensures the controller's await completes only after all bytes are sent.
+  await new Promise((resolve, reject) => {
+    doc.on('end',   resolve);
+    doc.on('error', reject);
+  });
+
   const memEnd = process.memoryUsage();
   console.log(
     `[PDF] end   — rss:${Math.round(memEnd.rss/1024/1024)}MB ` +
     `heap:${Math.round(memEnd.heapUsed/1024/1024)}/${Math.round(memEnd.heapTotal/1024/1024)}MB`
   );
-
-  return doc;
 }
 
 module.exports = { generatePDF };
