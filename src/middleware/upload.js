@@ -3,7 +3,7 @@ const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cloudinary = require('../config/cloudinary');
 
 const ALLOWED_FORMATS = ['jpg', 'jpeg', 'png', 'webp'];
-const MAX_SIZE_MB = 10; // 10 MB per image
+const MAX_SIZE_MB = 5; // 5 MB per image — balanced quality vs. Render free-tier memory
 
 const storage = new CloudinaryStorage({
   cloudinary,

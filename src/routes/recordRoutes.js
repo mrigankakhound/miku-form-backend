@@ -24,7 +24,7 @@ function handleUpload(req, res, next) {
   uploadFields(req, res, (err) => {
     if (err) {
       if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({ error: 'Image size must not exceed 300 KB.' });
+        return res.status(400).json({ error: 'Image size must not exceed 5 MB.' });
       }
       return res.status(400).json({ error: err.message || 'File upload error.' });
     }

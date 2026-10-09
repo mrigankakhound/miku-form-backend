@@ -147,18 +147,21 @@ function drawDashedLine(doc, y) {
  * @returns {PDFDocument} - PDFKit document (pipe to response)
  */
 async function generatePDF(record) {
-  // Download required record images in parallel
-  const imageDownloads = [
-    downloadImage(record.photo1.url),
-    downloadImage(record.photo2.url),
-    downloadImage(record.photo3.url),
-    downloadImage(record.photo4.url),
-  ];
-  if (record.photo5) {
-    imageDownloads.push(downloadImage(record.photo5.url));
-  }
+  // Log memory at start of PDF generation to help diagnose Render OOM events
+  const memStart = process.memoryUsage();
+  console.log(
+    `[PDF] start — rss:${Math.round(memStart.rss/1024/1024)}MB ` +
+    `heap:${Math.round(memStart.heapUsed/1024/1024)}/${Math.round(memStart.heapTotal/1024/1024)}MB ` +
+    `ext:${Math.round(memStart.external/1024/1024)}MB`
+  );
 
-  const [img1, img2, img3, img4, img5] = await Promise.all(imageDownloads);
+  // Download record images SEQUENTIALLY to avoid spiking RAM with parallel buffers.
+  // Peak memory: ~1 image in flight at a time rather than 4–5 simultaneously.
+  const img1 = await downloadImage(record.photo1.url);
+  const img2 = await downloadImage(record.photo2.url);
+  const img3 = await downloadImage(record.photo3.url);
+  const img4 = await downloadImage(record.photo4.url);
+  const img5 = record.photo5 ? await downloadImage(record.photo5.url) : null;
 
   // Load logos — prefer reading from disk (works locally without internet).
   // Falls back to the live production URL with a short timeout.
@@ -422,7 +425,20 @@ async function generatePDF(record) {
 
   drawFooter(doc);
 
+  // Hint to GC: release image buffers as soon as all pages are drawn,
+  // before the PDF stream finishes flushing to the client.
+  // eslint-disable-next-line no-unused-vars
+  let img1r = img1, img2r = img2, img3r = img3, img4r = img4, img5r = img5;
+  img1r = img2r = img3r = img4r = img5r = null;
+
   doc.end();
+
+  const memEnd = process.memoryUsage();
+  console.log(
+    `[PDF] end   — rss:${Math.round(memEnd.rss/1024/1024)}MB ` +
+    `heap:${Math.round(memEnd.heapUsed/1024/1024)}/${Math.round(memEnd.heapTotal/1024/1024)}MB`
+  );
+
   return doc;
 }
 

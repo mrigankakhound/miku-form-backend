@@ -7,6 +7,13 @@ const recordRoutes = require('./routes/recordRoutes');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Log memory at startup so Render logs show baseline usage
+const mem = process.memoryUsage();
+console.log(
+  `[startup] rss:${Math.round(mem.rss/1024/1024)}MB ` +
+  `heap:${Math.round(mem.heapUsed/1024/1024)}/${Math.round(mem.heapTotal/1024/1024)}MB`
+);
+
 // Connect to MongoDB
 connectDB();
 
@@ -34,6 +41,11 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err.message);
   res.status(500).json({ error: err.message || 'Internal server error.' });
+});
+
+// Prevent unhandled promise rejections from silently crashing the process
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.message : reason);
 });
 
 app.listen(PORT, () => {
